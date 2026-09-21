@@ -94,6 +94,12 @@ export default function GameAnalysis() {
     api.gameFlow(gameId).then(setFlow).catch(() => setFlow(null));
   }, [gameId, teamId]);
 
+  // The live demo's play-by-play/lineup-stint tables are trimmed to the 5 most
+  // recent seasons (see Methodology); Game Flow and Rotation both read from
+  // those tables, so an older game legitimately has neither. This flag decides
+  // whether to say so instead of just silently omitting both cards.
+  const preDataScopeGame = Boolean(gameId) && !gameLoading && season && season.slice(0, 4) < "2018" && !flow && !rotation;
+
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <div>
@@ -458,6 +464,16 @@ export default function GameAnalysis() {
                 ))}
               </div>
               <RotationChart data={rotation} teamFilter={rotationTeamFilter} />
+            </Card>
+          )}
+
+          {preDataScopeGame && (
+            <Card title="Game Flow & Minutes Rotation">
+              <p className="text-sm text-slate-400">
+                Not available for this game. On the live demo, play-by-play and lineup-stint data (which these two
+                panels are built from) is trimmed to the 5 most recent seasons to keep the demo hostable on a free
+                tier -- pick a 2018-19-or-later game to see them. See the Methodology tab for details.
+              </p>
             </Card>
           )}
 

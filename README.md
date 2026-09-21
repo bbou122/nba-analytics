@@ -8,8 +8,20 @@ A full-stack basketball analytics tool built as a portfolio piece for NBA front-
 
 - **`warehouse.duckdb`** -- the data warehouse: season-aggregate tables (traditional/advanced/defense/scoring stats, regular season and playoffs), game-level box scores, shot charts, lineup stints, and play-by-play, plus several tables derived directly from play-by-play (`fact_player_boxscore_game`, `fact_player_boxscore_clutch`) where no ready-made table existed. The `derive_*.py` and `build_warehouse.py` scripts at the project root show that work. It's too large for git, so it's distributed as a [GitHub Release asset](https://github.com/bbou122/nba-analytics/releases/download/full/warehouse.duckdb) (1.6GB, all ~28 seasons).
 - **`demo_warehouse.duckdb`** -- a trimmed copy for the live demo and for anyone who just wants to poke at it locally without a 1.6GB download: full career-level history in every season-aggregate table (win shares, archetypes, four factors, etc.), but the big row-level tables (play-by-play, lineup stints, shot charts) are cut down to the 5 most recent seasons they cover. Built by `scripts/build_demo_warehouse.py`. [Download it here](https://github.com/bbou122/nba-analytics/releases/download/demo/demo_warehouse.duckdb) (253MB).
-- **`api/`** -- a FastAPI backend (`routers/teams.py`, `players.py`, `shots.py`, `lineups.py`) exposing ~35 endpoints over the warehouse. `api/tests/` has an automated pytest suite covering the trickier logic (ID-bridging bugs, allocation math, route ordering).
-- **`frontend/`** -- a React/Vite app: an Executive Dashboard (team record, four factors, quarter trends, clutch identity, net rating trend, roster with estimated win shares), a Player Explorer (multi-season/career splits, shot charts, clutch, similar players), a Lineup Explorer, Game Analysis, an Archetypes page (KMeans clustering), and a Compare page.
+- **`api/`** -- a FastAPI backend (`routers/teams.py`, `players.py`, `shots.py`, `lineups.py`, `games.py`, `data_quality.py`) exposing 40 endpoints over the warehouse. `api/tests/` has an automated pytest suite (28 tests) covering the trickier logic (ID-bridging bugs, allocation math, route-registration ordering, NaN/JSON edge cases).
+- **`frontend/`** -- a React/Vite app with 12 pages:
+  - **Executive Dashboard** -- team record, four factors, quarter trends, clutch identity, net rating trend, roster with estimated win shares.
+  - **Player Explorer** -- multi-season/career splits, shot charts, clutch, similar players.
+  - **Lineup Explorer** -- 5-man lineup on/off impact and net rating.
+  - **Game Analysis** -- box score, shot chart, a Game Flow score-margin timeline (biggest leads, lead changes, scoring runs), and a per-player minutes rotation chart colored by plus/minus.
+  - **Archetypes** -- KMeans player-style clustering.
+  - **Compare** -- side-by-side player comparison.
+  - **Statboard** -- a sortable, filterable, percentile-ranked leaderboard across any set of player-seasons.
+  - **Team Compare** -- a two-team scouting sheet: ratings, four factors (own and allowed), scoring identity, home/away and clutch splits, opponent shot-zone weaknesses.
+  - **Record Calculator** -- filters a team's game log by opponent tendencies (FG%, 3PT attempts, offensive rebounds, free-throw attempts, home/away, back-to-backs) to surface a team's actual weaknesses, not just its overall record.
+  - **League Ranks** -- a team-season leaderboard and scatter-plot explorer with percentile shading across the full stat set.
+  - **Data Quality** -- the warehouse's own self-reported data-quality checks.
+  - **Methodology** -- an honesty page: every derived/estimated metric in the app, labeled and explained.
 
 ## Running it locally
 

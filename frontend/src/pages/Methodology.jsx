@@ -135,6 +135,67 @@ export default function Methodology() {
         </Entry>
       </Section>
 
+      <Section title="Statboard, Team Compare, Record Calculator &amp; League Ranks">
+        <Entry title="Statboard Percentiles" badge="Derived">
+          Ranks whatever set of player-seasons you've selected against each other, computed fresh every time from
+          that exact pool (<code>rank(pct=True) * 100</code>) -- pick five players and the percentiles are relative
+          to those five, not the whole league. Direction-agnostic: it's always "higher raw value = higher
+          percentile," even for stats where lower is conventionally better (turnovers, fouls, defensive rating), so
+          read the stat itself before reading the percentile color. Selecting multiple seasons for the same player
+          GP-weights their stats into one row, since a player's identity carries across seasons in a way a team's
+          roster doesn't (see League Ranks below).
+        </Entry>
+        <Entry title="Team Compare" badge="Derived">
+          A two-team scouting sheet built from the same box-score-derived numbers as the Executive Dashboard --
+          ratings, Four Factors (including "allowed" splits), home/away and clutch records, opponent shot-zone
+          weaknesses -- just laid out side by side for two arbitrary teams instead of one team against the league.
+          Every per-entry caveat listed elsewhere on this page (Four Factors home/away is Estimated, clutch shooting
+          FG% uses the looser time-only definition, etc.) still applies here.
+        </Entry>
+        <Entry title="Record Calculator" badge="Official">
+          Filters a team's actual per-game opponent box scores -- FG%, 3-point attempts, offensive rebounds,
+          free-throw attempts, home/away, back-to-back -- and reports the resulting record and point differential.
+          Every number is a straight read of official per-game box-score columns; nothing is estimated or modeled,
+          the tool is just a filter over real games.
+        </Entry>
+        <Entry title="League Ranks (Team Leaderboard)" badge="Derived">
+          Percentiles here are computed the same way as Statboard's, but against a pool of <em>team-seasons</em>, not
+          players, and deliberately does not blend a team's multiple seasons into one row the way Statboard blends a
+          player's. A franchise's roster and identity change every year, so the front-office-relevant question is
+          almost always about one specific team-season, not a career-style average. The "seasons" filter only
+          controls which team-season rows are eligible to be compared -- it's not an aggregation window.
+        </Entry>
+      </Section>
+
+      <Section title="Game Flow &amp; Minutes Rotation">
+        <Entry title="Minutes Rotation (Plus/Minus Timeline)" badge="Derived">
+          The lineup-stints table records each stint's boundaries as play-by-play event indices, not clock time, so
+          elapsed game-clock boundaries are reconstructed with a running cumulative sum of each stint's own duration
+          in seconds. Each colored segment shows that lineup's actual net plus-minus for the minutes it was on the
+          court, not an estimate.
+        </Entry>
+        <Entry title="Game Flow (Score Margin Timeline)" badge="Derived">
+          Elapsed time is reconstructed from play-by-play's "time remaining in period" field; margin at each event is
+          recomputed directly from the play-by-play score string rather than trusting the warehouse's own
+          scoremargin column, to avoid that column's "TIE" placeholder string getting parsed as a number.
+        </Entry>
+        <Entry title="Scoring Runs &amp; Lead Changes" badge="Estimated">
+          A scoring run is flagged using the same convention broadcasts use: one team scores continuously,
+          uninterrupted by the other team scoring, until it reaches 8 or more net points. Lead changes are
+          recomputed from this same reconstructed margin sequence and matched the warehouse's own official
+          lead-changes column exactly on every game spot-checked so far. Times-tied, recomputed the same way, was
+          off by one on that same spot-check -- most likely because of a boundary-definition difference (for
+          example, whether the opening 0-0 tip counts as a tie) rather than a parsing error, but it's flagged here
+          rather than presented as an exact match.
+        </Entry>
+        <Entry title="Data Scope on the Live Demo" badge="Estimated">
+          Game Flow and Minutes Rotation both read from play-by-play and lineup-stint tables, which are trimmed to
+          the 5 most recent seasons on the public demo (see the README) to keep it hostable on a free tier. Pick a
+          2018-19-or-later game to see these two panels -- older games will simply show the rest of Game Analysis
+          without them, rather than an error.
+        </Entry>
+      </Section>
+
       <Section title="Derived Box Scores">
         <Entry title="Per-Game Player Box Scores" badge="Derived">
           No ready-made "who did what, in this specific game" table exists in the warehouse outside of a handful of
