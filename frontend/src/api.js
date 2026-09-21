@@ -121,4 +121,11 @@ export const api = {
 
   // -- Minutes Rotation chart: per-player on-court segments + plus-minus for one game --
   gameRotation: (gameId) => apiGet("/lineups/rotation", { game_id: gameId }),
+
+  // -- Game Flow: score-margin timeline, biggest leads, scoring runs for one game --
+  gameFlow: (gameId) => apiGet(`/games/${gameId}/flow`),
+
+  // -- League Ranks: percentile-ranked team-season leaderboard --
+  teamLeaderboard: ({ seasons, seasonType } = {}) =>
+    apiGet("/teams/leaderboard", { seasons, season_type: seasonType }),
 };

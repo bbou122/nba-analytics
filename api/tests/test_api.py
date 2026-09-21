@@ -246,3 +246,60 @@ def test_rotation_player_segments_sum_to_their_total_seconds(client):
 def test_rotation_unknown_game_404s(client):
     r = client.get("/lineups/rotation", params={"game_id": "nope"})
     assert r.status_code == 404
+
+
+# --- Game Flow ---------------------------------------------------------------
+
+def test_game_flow_final_score_matches_dim_game(client):
+    r = client.get("/games/0022200001/flow")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    final = data["timeline"][-1]
+    assert final["home_score"] == 126
+    assert final["away_score"] == 117
+    assert final["margin"] == 9
+
+
+def test_game_flow_lead_changes_matches_official_other_stats(client):
+    # Cross-check against fact_other_stats' own lead_changes column,
+    # surfaced by /games/{id} -- these should agree exactly.
+    flow = client.get("/games/0022200001/flow").json()
+    official = client.get("/games/0022200001").json()
+    assert flow["lead_changes"] == official["other_stats"]["lead_changes"]
+
+
+def test_game_flow_scoring_runs_are_at_least_8_points(client):
+    r = client.get("/games/0022200001/flow")
+    data = r.json()
+    assert len(data["scoring_runs"]) > 0
+    assert all(run["points"] >= 8 for run in data["scoring_runs"])
+    assert all(run["team"] in ("home", "away") for run in data["scoring_runs"])
+
+
+def test_game_flow_unknown_game_404s(client):
+    r = client.get("/games/nope/flow")
+    assert r.status_code == 404
+
+
+# --- League Ranks (team leaderboard) ------------------------------------------
+
+def test_leaderboard_route_not_shadowed_by_team_id(client):
+    r = client.get("/teams/leaderboard", params={"seasons": KNOWN_SEASON})
+    assert r.status_code == 200, r.text
+
+
+def test_leaderboard_single_season_has_one_row_per_team(client):
+    r = client.get("/teams/leaderboard", params={"seasons": KNOWN_SEASON})
+    data = r.json()
+    assert data["team_season_count"] >= 30
+    celtics = next(t for t in data["teams"] if t["team_name"] == "Boston Celtics")
+    assert celtics["w"] == KNOWN_RS_WINS
+    # Celtics had the league's best net rating in 2022-23 -- should be the
+    # top percentile within that single season's 30-team pool.
+    assert celtics["stats"]["net_rating"]["percentile"] == 100.0
+
+
+def test_leaderboard_all_time_pool_is_much_larger_than_one_season(client):
+    all_time = client.get("/teams/leaderboard").json()
+    one_season = client.get("/teams/leaderboard", params={"seasons": KNOWN_SEASON}).json()
+    assert all_time["team_season_count"] > one_season["team_season_count"] * 10

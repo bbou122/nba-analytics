@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import GameShotChart from "../components/GameShotChart";
 import Loading from "../components/Loading";
+import Plot from "react-plotly.js";
 import RotationChart from "../components/RotationChart";
 
 function Card({ title, subtitle, children }) {
@@ -39,6 +40,7 @@ export default function GameAnalysis() {
   const [shotFilter, setShotFilter] = useState("both");
   const [rotation, setRotation] = useState(null);
   const [rotationTeamFilter, setRotationTeamFilter] = useState("both");
+  const [flow, setFlow] = useState(null);
   const [error, setError] = useState(null);
   const [gameLoading, setGameLoading] = useState(false);
 
@@ -89,6 +91,7 @@ export default function GameAnalysis() {
       .then(setGameShots)
       .catch(() => setGameShots([]));
     api.gameRotation(gameId).then(setRotation).catch(() => setRotation(null));
+    api.gameFlow(gameId).then(setFlow).catch(() => setFlow(null));
   }, [gameId, teamId]);
 
   return (
@@ -320,6 +323,119 @@ export default function GameAnalysis() {
                     ))}
                 </tbody>
               </table>
+            </Card>
+          )}
+
+          {flow && (
+            <Card
+              title="Game Flow"
+              subtitle="Score margin (home perspective) over the course of the game, from play-by-play. Positive is a home lead, negative is an away lead."
+            >
+              {(() => {
+                const periodBoundaries = [720, 1440, 2160, 2880];
+                for (let s = 2880 + 300; s < flow.total_seconds; s += 300) periodBoundaries.push(s);
+                const xs = flow.timeline.map((t) => t.elapsed_seconds / 60);
+                const ys = flow.timeline.map((t) => t.margin);
+                return (
+                  <>
+                    <Plot
+                      data={[
+                        {
+                          x: xs,
+                          y: ys,
+                          type: "scatter",
+                          mode: "lines",
+                          line: { color: "#38bdf8", width: 2, shape: "hv" },
+                          fill: "tozeroy",
+                          fillcolor: "rgba(56,189,248,0.12)",
+                          name: "Margin",
+                          hovertemplate: "%{x:.1f} min: %{y:+d}<extra></extra>",
+                        },
+                        {
+                          x: [0, flow.total_seconds / 60],
+                          y: [0, 0],
+                          type: "scatter",
+                          mode: "lines",
+                          line: { color: "#475569", width: 1, dash: "dot" },
+                          hoverinfo: "skip",
+                          showlegend: false,
+                        },
+                      ]}
+                      layout={{
+                        paper_bgcolor: "#0f172a",
+                        plot_bgcolor: "#0f172a",
+                        font: { color: "#e2e8f0" },
+                        xaxis: {
+                          title: "Minute",
+                          gridcolor: "#1e293b",
+                          range: [0, flow.total_seconds / 60],
+                        },
+                        yaxis: { title: `Margin (${flow.home.abbreviation} - ${flow.away.abbreviation})`, gridcolor: "#1e293b" },
+                        shapes: periodBoundaries
+                          .filter((b) => b < flow.total_seconds)
+                          .map((b) => ({
+                            type: "line",
+                            x0: b / 60,
+                            x1: b / 60,
+                            y0: 0,
+                            y1: 1,
+                            yref: "paper",
+                            line: { color: "#334155", width: 1, dash: "dash" },
+                          })),
+                        margin: { l: 55, r: 10, t: 10, b: 45 },
+                        height: 300,
+                        showlegend: false,
+                      }}
+                      config={{ displayModeBar: false, responsive: true }}
+                      style={{ width: "100%" }}
+                      useResizeHandler
+                    />
+                    <div className="flex flex-wrap gap-6 mt-3 text-sm">
+                      <div>
+                        <span className="text-slate-500">Biggest {flow.home.abbreviation} lead: </span>
+                        <span className="font-medium text-green-400">+{flow.biggest_lead_home.margin}</span>
+                        <span className="text-slate-500"> at {(flow.biggest_lead_home.elapsed_seconds / 60).toFixed(1)} min</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Biggest {flow.away.abbreviation} lead: </span>
+                        <span className="font-medium text-green-400">+{flow.biggest_lead_away.margin}</span>
+                        <span className="text-slate-500"> at {(flow.biggest_lead_away.elapsed_seconds / 60).toFixed(1)} min</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Lead changes: </span>
+                        <span className="font-medium">{flow.lead_changes}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Times tied: </span>
+                        <span className="font-medium">{flow.times_tied}</span>
+                      </div>
+                    </div>
+                    {flow.scoring_runs.length > 0 && (
+                      <div className="mt-4">
+                        <div className="text-xs text-slate-400 mb-2">Scoring Runs (8-0 or better)</div>
+                        <div className="flex flex-wrap gap-2">
+                          {flow.scoring_runs.map((run, i) => (
+                            <div
+                              key={i}
+                              className={`text-xs rounded px-2.5 py-1.5 border ${
+                                run.team === "home"
+                                  ? "bg-sky-950/50 border-sky-800 text-sky-300"
+                                  : "bg-orange-950/50 border-orange-800 text-orange-300"
+                              }`}
+                            >
+                              {run.team === "home" ? flow.home.abbreviation : flow.away.abbreviation} {run.points}-0 run
+                              <span className="text-slate-500">
+                                {" "}
+                                ({(run.start_seconds / 60).toFixed(1)}-{(run.end_seconds / 60).toFixed(1)} min)
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </Card>
           )}
 

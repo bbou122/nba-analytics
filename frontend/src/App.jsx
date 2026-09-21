@@ -9,6 +9,7 @@ import Compare from "./pages/Compare";
 import Statboard from "./pages/Statboard";
 import TeamCompare from "./pages/TeamCompare";
 import RecordCalculator from "./pages/RecordCalculator";
+import LeagueRanks from "./pages/LeagueRanks";
 import Methodology from "./pages/Methodology";
 
 const TABS = [
@@ -21,6 +22,7 @@ const TABS = [
   { key: "statboard", label: "Statboard" },
   { key: "teamcompare", label: "Team Compare" },
   { key: "recordcalc", label: "Record Calculator" },
+  { key: "leagueranks", label: "League Ranks" },
   { key: "quality", label: "Data Quality" },
   { key: "methodology", label: "Methodology" },
 ];
@@ -56,6 +58,7 @@ export default function App() {
         {tab === "statboard" && <Statboard />}
         {tab === "teamcompare" && <TeamCompare />}
         {tab === "recordcalc" && <RecordCalculator />}
+        {tab === "leagueranks" && <LeagueRanks />}
         {tab === "quality" && <DataQuality />}
         {tab === "methodology" && <Methodology />}
       </main>

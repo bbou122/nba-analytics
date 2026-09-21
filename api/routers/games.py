@@ -137,3 +137,156 @@ def get_game(game_id: str, con: duckdb.DuckDBPyConnection = Depends(get_db)):
         "quarters": quarters,
         "other_stats": other,
     })
+
+
+@router.get("/{game_id}/flow")
+def get_game_flow(game_id: str, con: duckdb.DuckDBPyConnection = Depends(get_db)):
+    """
+    Score-margin timeline for one game, for a "game flow"/momentum chart
+    to pair with /lineups/rotation's on-court chart -- this is the "when
+    the game was actually won" view, that one is "who was on the floor
+    for it."
+
+    fact_play_by_play has no elapsed-clock column of its own: pctimestring
+    is the CLOCK REMAINING in the current period (loaded into a TIME
+    column, so its hour/minute fields actually hold minutes/seconds
+    remaining -- e.g. TIME '11:15:00' means 11:15 left, not 11 hours).
+    Elapsed game time is reconstructed from period + that remaining time,
+    with 720s regulation periods and 300s OT periods.
+
+    `score` is only populated on rows where the score actually changed,
+    formatted "AWAY - HOME" (confirmed against dim_game's own final
+    scores); parsing it directly, rather than trusting the scoremargin
+    string column's "TIE" spelling, is what drives both the margin
+    series and the scoring-run detection below.
+
+    Scoring runs use the classic broadcast definition: a team's points
+    scored since the opponent last scored (an "opponent-scoreless"
+    stretch), reported once it reaches >=8 points net.
+
+    lead_changes/times_tied are recomputed here directly from this same
+    margin sequence (sign changes / margin==0 events) rather than reusing
+    fact_other_stats' own columns -- spot-checked against a known game
+    where lead_changes matched exactly and times_tied was off by one,
+    which is within the range of boundary-definition differences (e.g.
+    whether the opening 0-0 tip counts) rather than a parsing bug.
+    """
+    game_df = con.execute("""
+        SELECT team_id_home, team_abbreviation_home, team_id_away, team_abbreviation_away, pts_home, pts_away
+        FROM dim_game WHERE game_id = ?
+    """, [game_id]).fetchdf()
+    if game_df.empty:
+        raise HTTPException(status_code=404, detail="Game not found")
+    g = game_df.to_dict(orient="records")[0]
+
+    df = con.execute("""
+        SELECT
+            eventnum, period, score,
+            EXTRACT(hour FROM pctimestring) * 60 + EXTRACT(minute FROM pctimestring) AS remaining_seconds,
+            CASE WHEN period <= 4 THEN (period - 1) * 720 ELSE 2880 + (period - 5) * 300 END
+              + (CASE WHEN period <= 4 THEN 720 ELSE 300 END
+                 - (EXTRACT(hour FROM pctimestring) * 60 + EXTRACT(minute FROM pctimestring)))
+              AS elapsed_seconds
+        FROM fact_play_by_play
+        WHERE game_id = ? AND score IS NOT NULL
+        ORDER BY eventnum
+    """, [game_id]).fetchdf()
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No play-by-play scoring data found for that game")
+
+    split = df["score"].str.split(" - ", expand=True)
+    df["away_score"] = split[0].astype(int)
+    df["home_score"] = split[1].astype(int)
+    df["margin"] = df["home_score"] - df["away_score"]
+    df["elapsed_seconds"] = df["elapsed_seconds"].astype(int)
+
+    # Collapse same-instant events (e.g. and-one FT immediately after the
+    # basket) down to their final score at that elapsed second, so the
+    # step chart doesn't show a vertical multi-jump at one x position.
+    df = df.sort_values(["elapsed_seconds", "eventnum"]).drop_duplicates("elapsed_seconds", keep="last")
+
+    timeline = [
+        {"elapsed_seconds": int(r.elapsed_seconds), "period": int(r.period), "home_score": int(r.home_score),
+         "away_score": int(r.away_score), "margin": int(r.margin)}
+        for r in df.itertuples()
+    ]
+
+    # Biggest lead each way (first time it was reached).
+    max_row = df.loc[df["margin"].idxmax()]
+    min_row = df.loc[df["margin"].idxmin()]
+    biggest_lead_home = {"margin": int(max_row["margin"]), "elapsed_seconds": int(max_row["elapsed_seconds"])}
+    biggest_lead_away = {"margin": int(-min_row["margin"]), "elapsed_seconds": int(min_row["elapsed_seconds"])}
+
+    # Lead changes / times tied, from the margin sequence itself (cross-
+    # checkable against fact_other_stats.lead_changes/times_tied on the
+    # main /games/{id} endpoint, though that source may define ties/
+    # changes slightly differently at the margin==0 boundary).
+    lead_changes = 0
+    times_tied = 0
+    prior_sign = 0
+    for m in df["margin"]:
+        if m == 0:
+            times_tied += 1
+            continue
+        sign = 1 if m > 0 else -1
+        if prior_sign != 0 and sign != prior_sign:
+            lead_changes += 1
+        prior_sign = sign
+
+    # Scoring runs: points scored by one team since the other last scored.
+    runs = []
+    run_team = None
+    run_points = 0
+    run_start_elapsed = 0
+    run_start_score = (0, 0)
+    prev_home, prev_away = 0, 0
+    for r in df.itertuples():
+        home_delta = r.home_score - prev_home
+        away_delta = r.away_score - prev_away
+        if home_delta > 0:
+            team, pts = "home", home_delta
+        elif away_delta > 0:
+            team, pts = "away", away_delta
+        else:
+            prev_home, prev_away = r.home_score, r.away_score
+            continue
+
+        if team == run_team:
+            run_points += pts
+            run_end_elapsed = r.elapsed_seconds
+            run_end_score = (r.home_score, r.away_score)
+        else:
+            if run_team is not None and run_points >= 8:
+                runs.append({
+                    "team": run_team, "points": run_points,
+                    "start_seconds": run_start_elapsed, "end_seconds": run_end_elapsed,
+                    "start_score": {"home": run_start_score[0], "away": run_start_score[1]},
+                    "end_score": {"home": run_end_score[0], "away": run_end_score[1]},
+                })
+            run_team, run_points = team, pts
+            run_start_elapsed = run_end_elapsed = r.elapsed_seconds
+            run_start_score = (prev_home, prev_away)
+            run_end_score = (r.home_score, r.away_score)
+        prev_home, prev_away = r.home_score, r.away_score
+
+    if run_team is not None and run_points >= 8:
+        runs.append({
+            "team": run_team, "points": run_points,
+            "start_seconds": run_start_elapsed, "end_seconds": run_end_elapsed,
+            "start_score": {"home": run_start_score[0], "away": run_start_score[1]},
+            "end_score": {"home": run_end_score[0], "away": run_end_score[1]},
+        })
+    runs.sort(key=lambda x: -x["points"])
+
+    return {
+        "game_id": game_id,
+        "home": {"team_id": g["team_id_home"], "abbreviation": g["team_abbreviation_home"], "pts": g["pts_home"]},
+        "away": {"team_id": g["team_id_away"], "abbreviation": g["team_abbreviation_away"], "pts": g["pts_away"]},
+        "total_seconds": int(df["elapsed_seconds"].max()),
+        "timeline": timeline,
+        "biggest_lead_home": biggest_lead_home,
+        "biggest_lead_away": biggest_lead_away,
+        "lead_changes": lead_changes,
+        "times_tied": times_tied,
+        "scoring_runs": runs[:10],
+    }

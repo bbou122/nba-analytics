@@ -1,6 +1,7 @@
 from typing import Optional
 
 import duckdb
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_db
@@ -78,6 +79,110 @@ def compare_teams(
         "team_a": team_a_data,
         "team_b": team_b_data,
     }
+
+
+
+# Stat keys exposed by /teams/leaderboard, grouped by their source table.
+# All three team-season tables are already per-game rates (verified
+# against known 2022-23 Celtics figures), so they're directly comparable
+# across seasons of different length with no GP-weighting needed -- unlike
+# /players/statboard, which blends multiple *player* seasons together.
+_LEADERBOARD_TRAD_COLS = [
+    "PTS", "REB", "OREB", "DREB", "AST", "STL", "BLK", "TOV", "PF",
+    "FG_PCT", "FG3_PCT", "FT_PCT", "PLUS_MINUS",
+]
+_LEADERBOARD_ADV_COLS = [
+    "OFF_RATING", "DEF_RATING", "NET_RATING", "PACE", "TS_PCT", "PIE",
+    "AST_PCT", "AST_TO", "AST_RATIO", "OREB_PCT", "DREB_PCT", "REB_PCT", "TM_TOV_PCT",
+]
+# Four factors' own value-add beyond what's already in _ADV_COLS: EFG_PCT
+# (advanced only has TS_PCT) and the OPP_* "allowed" side of each factor.
+_LEADERBOARD_FF_COLS = ["EFG_PCT", "FTA_RATE", "OPP_EFG_PCT", "OPP_FTA_RATE", "OPP_TOV_PCT", "OPP_OREB_PCT"]
+_LEADERBOARD_STAT_COLS = ["W_PCT"] + _LEADERBOARD_TRAD_COLS + _LEADERBOARD_ADV_COLS + _LEADERBOARD_FF_COLS
+
+
+@router.get("/leaderboard")
+def get_team_leaderboard(
+    seasons: Optional[str] = Query(None, description='Comma-separated "YYYY-YY" seasons. Omit for every team-season on record.'),
+    season_type: str = Query("Regular Season", pattern=_SEASON_TYPE_PATTERN),
+    con: duckdb.DuckDBPyConnection = Depends(get_db),
+):
+    """
+    One row per team-season -- Traditional, Advanced, and Four Factors
+    stats -- with each stat's percentile computed fresh within the
+    selected pool. Omit `seasons` to rank every team-season on record
+    (1996-97 through the warehouse's most recent season, ~800 rows)
+    against each other, for historical context ("how does this team's
+    current net rating compare to every team-season ever"); pass one or
+    more seasons to rank just that season's ~30 teams against each
+    other, for a current-league power-rankings view. Mirrors
+    /players/statboard's design and its percentile convention: 'higher
+    raw value = higher percentile' even for stats where lower is
+    conventionally better (DEF_RATING, TOV, PF, TM_TOV_PCT, OPP_EFG_PCT,
+    OPP_FTA_RATE, OPP_OREB_PCT) -- read the stat itself for those, not
+    just its color.
+    """
+    seg = "po" if season_type == "Playoffs" else "rs"
+    trad_table = f"fact_team_traditional_{seg}"
+    adv_table = f"fact_team_advanced_{seg}"
+    ff_table = f"fact_team_four_factors_{seg}"
+
+    season_clause = ""
+    params = []
+    if seasons:
+        season_list = [s.strip() for s in seasons.split(",") if s.strip()]
+        if season_list:
+            placeholders = ", ".join("?" for _ in season_list)
+            season_clause = f"AND t.SEASON IN ({placeholders})"
+            params = season_list
+
+    trad_cols_sql = ", ".join(f"t.{c}" for c in _LEADERBOARD_TRAD_COLS)
+    adv_cols_sql = ", ".join(f"a.{c}" for c in _LEADERBOARD_ADV_COLS)
+    ff_cols_sql = ", ".join(f"f.{c}" for c in _LEADERBOARD_FF_COLS)
+
+    df = con.execute(f"""
+        SELECT t.TEAM_ID, t.TEAM_NAME, t.SEASON, t.GP, t.W, t.L, t.W_PCT,
+               {trad_cols_sql}, {adv_cols_sql}, {ff_cols_sql}
+        FROM {trad_table} t
+        JOIN {adv_table} a ON a.TEAM_ID = t.TEAM_ID AND a.SEASON = t.SEASON
+        JOIN {ff_table} f ON f.TEAM_ID = t.TEAM_ID AND f.SEASON = t.SEASON
+        WHERE 1 = 1 {season_clause}
+        ORDER BY t.SEASON, t.TEAM_NAME
+    """, params).fetchdf()
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No team-seasons found for that season selection")
+
+    pct_df = df[_LEADERBOARD_STAT_COLS].rank(pct=True) * 100
+
+    teams = []
+    for i, row in df.reset_index(drop=True).iterrows():
+        stats = {}
+        for col in _LEADERBOARD_STAT_COLS:
+            key = col.lower()
+            val = row[col]
+            pct = pct_df.iloc[i][col]
+            stats[key] = {
+                "value": round(float(val), 3) if pd.notna(val) else None,
+                "percentile": round(float(pct), 1) if pd.notna(pct) else None,
+            }
+        teams.append({
+            "team_id": int(row["TEAM_ID"]),
+            "team_name": row["TEAM_NAME"],
+            "season": row["SEASON"],
+            "gp": int(row["GP"]),
+            "w": int(row["W"]),
+            "l": int(row["L"]),
+            "stats": stats,
+        })
+
+    return _clean_nan({
+        "seasons_requested": seasons,
+        "season_type": season_type,
+        "team_season_count": len(teams),
+        "available_stats": [c.lower() for c in _LEADERBOARD_STAT_COLS],
+        "percentile_note": "Percentile is 'higher raw value = higher percentile' within the selected pool, even for stats where lower is conventionally better (DEF_RATING, TOV, PF, TM_TOV_PCT, OPP_EFG_PCT, OPP_FTA_RATE, OPP_OREB_PCT).",
+        "teams": teams,
+    })
 
 
 @router.get("/{team_id}")
@@ -1159,3 +1264,4 @@ def get_team_record_calculator(
         "game_count": len(games),
         "games": games,
     }
+
