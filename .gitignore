@@ -1,0 +1,37 @@
+# --- Large / generated data files (not tracked in git) ---
+# The full warehouse (1.6GB) and trimmed demo warehouse (250MB) are both
+# too large for a normal git commit -- see README for how to get them
+# (GitHub Release asset download).
+*.duckdb
+*.sqlite
+*.sqlite3
+
+# Raw source data dumps used to build the warehouse -- reproducible via the
+# ETL scripts at the project root, not meant to be tracked directly.
+/csv/
+/extracted/
+/shots_by_season/
+/NBA_2004_2025_Shots.csv/
+/NBA-dataset-stats-player-team-main/
+dataset-metadata.json
+run_summary.json
+
+# --- Python ---
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# --- Frontend ---
+node_modules/
+dist/
+.vite/
+frontend/.env
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
