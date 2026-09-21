@@ -2,7 +2,7 @@
 
 A full-stack basketball analytics tool built as a portfolio piece for NBA front-office analyst roles: FastAPI + DuckDB backend over ~28 seasons of NBA stats, React/Plotly frontend, and a set of derived metrics (clutch splits, win-share estimates, shot-creation types, player archetypes, teammate on/off impact) built from raw box scores and play-by-play rather than pulled pre-made.
 
-**Live demo: coming shortly (deployment in progress)** -- click around without installing anything, once it is up. It runs on a trimmed 5-season copy of the data (see below); the full ~28-season warehouse is available for local use.
+**[Live demo](https://nba-analytics-sable.vercel.app/)** -- click around without installing anything. It runs on a trimmed 5-season copy of the data (see below); the full ~28-season warehouse is available for local use. (Backend is on Render's free tier, so the first request after a period of inactivity can take up to a minute to wake it up.)
 
 ## What's in here
 
