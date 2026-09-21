@@ -1,0 +1,16 @@
+# Render "Blueprint" -- lets you deploy the backend with one click via
+# https://render.com/deploy, or by connecting this repo and choosing
+# "Apply from render.yaml" in the Render dashboard.
+services:
+  - type: web
+    name: nba-analytics-api
+    runtime: python
+    plan: free
+    rootDir: api
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash entrypoint.sh
+    envVars:
+      - key: NBA_WAREHOUSE_PATH
+        value: demo_warehouse.duckdb  # relative to rootDir (api/) -- portable across hosts
+      - key: WAREHOUSE_URL
+        sync: false  # set this in the Render dashboard to the demo_warehouse.duckdb Release asset URL
