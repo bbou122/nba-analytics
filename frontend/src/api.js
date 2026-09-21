@@ -106,4 +106,19 @@ export const api = {
   // Nearest neighbors in the archetype feature space -- "who plays like this player."
   similarPlayers: (playerId, { season, minGp, n } = {}) =>
     apiGet(`/players/${playerId}/similar`, { season, min_gp: minGp, n }),
+
+  // -- Statboard: leaderboard + scatter plot data source, and team compare --
+  statboard: ({ seasons, seasonType, position, minGp, minMpg } = {}) =>
+    apiGet("/players/statboard", {
+      seasons, season_type: seasonType, position, min_gp: minGp, min_mpg: minMpg,
+    }),
+  compareTeams: ({ teamA, teamB, season, seasonType } = {}) =>
+    apiGet("/teams/compare", { team_a: teamA, team_b: teamB, season, season_type: seasonType }),
+
+  // -- Record Calculator: per-game opponent box lines for client-side filtering --
+  teamRecordCalculator: (teamId, { seasons, seasonType } = {}) =>
+    apiGet(`/teams/${teamId}/record-calculator`, { seasons, season_type: seasonType }),
+
+  // -- Minutes Rotation chart: per-player on-court segments + plus-minus for one game --
+  gameRotation: (gameId) => apiGet("/lineups/rotation", { game_id: gameId }),
 };

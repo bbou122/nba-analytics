@@ -2,6 +2,7 @@ from typing import Optional
 
 import duckdb
 import numpy as np
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_db
@@ -291,6 +292,165 @@ def get_player_archetypes(
             "each cluster's most distinctive stat(s), not a published archetype taxonomy."
         ),
         "clusters": clusters_summary,
+        "players": players,
+    }
+
+
+# Stat keys exposed by /players/statboard -> (source table, source column).
+# Traditional + Advanced only, per the project's scope for this feature.
+# All of these are already per-game/rate figures in the warehouse (verified
+# against known career averages), so they GP-weight-average cleanly across
+# an arbitrary set of seasons the same way get_player_advanced() already
+# does for a smaller column set.
+_STATBOARD_TRAD_COLS = [
+    "MIN", "PTS", "REB", "OREB", "DREB", "AST", "STL", "BLK", "TOV", "PF",
+    "FGM", "FGA", "FG_PCT", "FG3M", "FG3A", "FG3_PCT", "FTM", "FTA", "FT_PCT", "PLUS_MINUS",
+]
+_STATBOARD_ADV_COLS = [
+    "OFF_RATING", "DEF_RATING", "NET_RATING", "AST_PCT", "OREB_PCT", "DREB_PCT",
+    "REB_PCT", "TOV_PCT", "EFG_PCT", "TS_PCT", "USG_PCT", "PACE", "PIE",
+]
+_STATBOARD_ALL_COLS = _STATBOARD_TRAD_COLS + _STATBOARD_ADV_COLS
+
+
+@router.get("/statboard")
+def get_statboard(
+    seasons: Optional[str] = Query(None, description='Comma-separated "YYYY-YY" seasons. Omit for every season on record.'),
+    season_type: str = Query("Regular Season", pattern="^(Regular Season|Playoffs)$"),
+    position: Optional[str] = Query(None, description='Substring match on dim_common_player_info.position, e.g. "Guard" or "Center". Omit for all positions.'),
+    min_gp: int = Query(10, ge=0, description="Minimum total games played across the selected seasons"),
+    min_mpg: float = Query(10.0, ge=0, description="Minimum GP-weighted average minutes per game across the selected seasons"),
+    con: duckdb.DuckDBPyConnection = Depends(get_db),
+):
+    """
+    Backs the Statboard's Leaderboard and Scatter Plot views: one row per
+    qualifying player with Traditional + Advanced per-game/rate stats
+    GP-weight-averaged across an arbitrary set of seasons (or every season
+    on record, if `seasons` is omitted), plus each stat's percentile
+    within that same qualifying pool.
+
+    Percentile is recomputed fresh against whoever currently qualifies
+    (after the season/position/min_gp/min_mpg filters), not against a
+    fixed all-time reference -- "how good is this number relative to
+    everyone else in this view right now." It's always "higher raw value
+    = higher percentile," even for stats where lower is conventionally
+    better (TOV, DEF_RATING) -- read the stat itself for those, not just
+    its percentile/color.
+
+    GP-weighting a multi-season selection means a player who played 20
+    games in one included season and 82 in another is weighted mostly by
+    the 82-game season, same logic as get_player_advanced().
+    """
+    seg = "po" if season_type == "Playoffs" else "rs"
+    trad_table = f"fact_player_traditional_{seg}"
+    adv_table = f"fact_player_advanced_{seg}"
+
+    season_clause = ""
+    season_params = []
+    if seasons:
+        season_list = [s.strip() for s in seasons.split(",") if s.strip()]
+        if season_list:
+            placeholders = ", ".join("?" for _ in season_list)
+            season_clause = f"AND SEASON IN ({placeholders})"
+            season_params = season_list
+
+    trad_cols_sql = ", ".join(_STATBOARD_TRAD_COLS)
+    trad_df = con.execute(f"""
+        SELECT PLAYER_ID, PLAYER_NAME, TEAM_ABBREVIATION, SEASON, GP, {trad_cols_sql}
+        FROM {trad_table}
+        WHERE GP > 0 {season_clause}
+    """, season_params).fetchdf()
+    if trad_df.empty:
+        raise HTTPException(status_code=404, detail="No player stats found for that season selection")
+
+    # The warehouse column is TM_TOV_PCT; rename it to TOV_PCT here to match
+    # the flat key scheme in _STATBOARD_ADV_COLS.
+    adv_select_cols = [("TM_TOV_PCT AS TOV_PCT" if c == "TOV_PCT" else c) for c in _STATBOARD_ADV_COLS]
+    adv_cols_sql = ", ".join(adv_select_cols)
+    adv_df = con.execute(f"""
+        SELECT PLAYER_ID, SEASON, {adv_cols_sql}
+        FROM {adv_table}
+        WHERE 1=1 {season_clause}
+    """, season_params).fetchdf()
+
+    merged = trad_df.merge(adv_df, on=["PLAYER_ID", "SEASON"], how="left")
+
+    # GP-weighted average of every stat column, per player, across the
+    # selected seasons -- fully vectorized (no groupby.apply, whose
+    # include_groups/keyword behavior has shifted across pandas versions)
+    # so this doesn't depend on exactly which pandas gets installed.
+    # For each column, weight_sum = sum(value * GP) over rows where that
+    # column isn't null, and gp_sum = sum(GP) over those same rows, so a
+    # player missing a stat in one season doesn't drag that stat's average
+    # down with a phantom zero.
+    weighted = pd.DataFrame({"PLAYER_ID": merged["PLAYER_ID"], "GP": merged["GP"]})
+    for col in _STATBOARD_ALL_COLS:
+        notna = merged[col].notna()
+        weighted[f"{col}__wsum"] = (merged[col] * merged["GP"]).where(notna, 0.0)
+        weighted[f"{col}__gpsum"] = merged["GP"].where(notna, 0)
+
+    totals = weighted.groupby("PLAYER_ID").sum()
+    total_gp = merged.groupby("PLAYER_ID")["GP"].sum()
+
+    agg_df = pd.DataFrame({"PLAYER_ID": total_gp.index, "GP": total_gp.values})
+    for col in _STATBOARD_ALL_COLS:
+        gpsum = totals[f"{col}__gpsum"].values
+        wsum = totals[f"{col}__wsum"].values
+        with np.errstate(invalid="ignore", divide="ignore"):
+            agg_df[col] = np.where(gpsum > 0, wsum / gpsum, np.nan)
+
+    name_team = (
+        merged.sort_values("SEASON")
+        .groupby("PLAYER_ID")
+        .agg(PLAYER_NAME=("PLAYER_NAME", "last"), TEAM_ABBREVIATION=("TEAM_ABBREVIATION", "last"))
+        .reset_index()
+    )
+    agg_df = agg_df.merge(name_team, on="PLAYER_ID", how="left")
+
+    agg_df = agg_df[agg_df["GP"] >= min_gp]
+    agg_df = agg_df[agg_df["MIN"].fillna(0) >= min_mpg]
+
+    if position:
+        pos_df = con.execute(
+            "SELECT person_id AS PLAYER_ID, position FROM dim_common_player_info WHERE position ILIKE ?",
+            [f"%{position}%"],
+        ).fetchdf()
+        agg_df = agg_df[agg_df["PLAYER_ID"].isin(pos_df["PLAYER_ID"])]
+
+    if agg_df.empty:
+        raise HTTPException(status_code=404, detail="No players qualify for that combination of filters")
+
+    # Percentile within this qualifying pool, per stat, "higher raw value = higher percentile."
+    pct_df = agg_df[_STATBOARD_ALL_COLS].rank(pct=True) * 100
+
+    players = []
+    for i, row in agg_df.reset_index(drop=True).iterrows():
+        stats = {}
+        for col in _STATBOARD_ALL_COLS:
+            key = col.lower()
+            val = row[col]
+            pct = pct_df.iloc[i][col]
+            stats[key] = {
+                "value": round(float(val), 3) if pd.notna(val) else None,
+                "percentile": round(float(pct), 1) if pd.notna(pct) else None,
+            }
+        players.append({
+            "player_id": int(row["PLAYER_ID"]),
+            "player_name": row["PLAYER_NAME"],
+            "team": row["TEAM_ABBREVIATION"],
+            "gp": int(row["GP"]),
+            "stats": stats,
+        })
+
+    return {
+        "seasons_requested": seasons,
+        "season_type": season_type,
+        "position_filter": position,
+        "min_gp": min_gp,
+        "min_mpg": min_mpg,
+        "qualifying_players": len(players),
+        "available_stats": [c.lower() for c in _STATBOARD_ALL_COLS],
+        "percentile_note": "Percentile is 'higher raw value = higher percentile' among the currently-qualifying pool, even for stats where lower is conventionally better (TOV, DEF_RATING).",
         "players": players,
     }
 

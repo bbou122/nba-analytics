@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from db import get_db
 from routers.shots import _SEVEN_ZONE_CASE
+from routers.games import _clean_nan
 
 _SEASON_TYPE_PATTERN = "^(Regular Season|Playoffs)$"
 
@@ -36,6 +37,47 @@ def list_teams(con: duckdb.DuckDBPyConnection = Depends(get_db)):
         ORDER BY full_name
     """).fetchdf()
     return df.to_dict(orient="records")
+
+
+@router.get("/compare")
+def compare_teams(
+    team_a: int = Query(..., description="First team's id"),
+    team_b: int = Query(..., description="Second team's id"),
+    season: str = Query(..., description='e.g. "2022-23"'),
+    season_type: str = Query("Regular Season", pattern=_SEASON_TYPE_PATTERN),
+    con: duckdb.DuckDBPyConnection = Depends(get_db),
+):
+    """
+    Head-to-head 'scouting sheet' for two teams in the same season: record,
+    four factors, advanced ratings, context stats, and home/away splits
+    (from get_team_dashboard), shot-selection/ball-movement identity and
+    opponent-zone weaknesses (from get_team_identity), and clutch record
+    (from get_team_clutch) -- side by side. This is purely a fan-out to
+    those three existing endpoints for each team; see their docstrings for
+    methodology/accuracy notes on any individual field.
+    """
+    def _one(team_id):
+        info = get_team(team_id, con=con)
+        dashboard = get_team_dashboard(team_id, season=season, home_away="all", season_type=season_type, con=con)
+        identity = get_team_identity(team_id, season=season, season_type=season_type, con=con)
+        clutch = get_team_clutch(team_id, season=season, season_type=season_type, con=con)
+        return {**info, "dashboard": dashboard, "identity": identity, "clutch": clutch}
+
+    try:
+        team_a_data = _one(team_a)
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=f"team_a: {e.detail}")
+    try:
+        team_b_data = _one(team_b)
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=f"team_b: {e.detail}")
+
+    return {
+        "season": season,
+        "season_type": season_type,
+        "team_a": team_a_data,
+        "team_b": team_b_data,
+    }
 
 
 @router.get("/{team_id}")
@@ -1034,4 +1076,86 @@ def get_team_net_rating_trend(
         "home_away_filter": home_away,
         "rolling_window": rolling_window,
         "games": games.to_dict(orient="records"),
+    }
+
+
+@router.get("/{team_id}/record-calculator")
+def get_team_record_calculator(
+    team_id: int,
+    seasons: Optional[str] = Query(None, description='Comma-separated "YYYY-YY" seasons. Omit for every season on record.'),
+    season_type: str = Query("Regular Season", pattern=_SEASON_TYPE_PATTERN),
+    con: duckdb.DuckDBPyConnection = Depends(get_db),
+):
+    """
+    Per-game rows for this team: own result/margin plus the OPPONENT's
+    full box-score line that game (FG%, 3PA, OREB, FTA, etc.) -- built
+    for the Record Calculator page, which lets a coach ask "how does this
+    team do when the opponent shoots well / rebounds well / gets to the
+    line a lot." All filtering (home/away, opponent FG% range, opponent
+    3PA/OREB/FTA thresholds) happens client-side against this one
+    payload rather than round-tripping to the API on every slider move,
+    since a season's worth of games for one team is a small, cheap
+    dataset (dim_game already carries both teams' full box lines, so no
+    extra join is needed).
+
+    is_back_to_back mirrors the same rest_days=1 definition used in
+    /teams/{id}/games, in case a coach also wants to isolate fatigue
+    spots ("do we struggle when the opponent shot well on a road
+    back-to-back").
+    """
+    season_expr = """
+        (CAST(season_id % 10000 AS VARCHAR) || '-' ||
+         LPAD(CAST((season_id % 10000 + 1) % 100 AS VARCHAR), 2, '0'))
+    """
+    where = "WHERE (team_id_home = ? OR team_id_away = ?) AND season_type = ?"
+    params = [team_id, team_id, season_type]
+    if seasons:
+        season_list = [s.strip() for s in seasons.split(",") if s.strip()]
+        if season_list:
+            placeholders = ", ".join("?" for _ in season_list)
+            where += f" AND {season_expr} IN ({placeholders})"
+            params += season_list
+
+    df = con.execute(f"""
+        WITH base AS (
+            SELECT
+                game_id, game_date, {season_expr} AS season,
+                CASE WHEN team_id_home = ? THEN true ELSE false END AS is_home,
+                CASE WHEN team_id_home = ? THEN wl_home ELSE wl_away END AS result,
+                CASE WHEN team_id_home = ? THEN team_abbreviation_away ELSE team_abbreviation_home END AS opponent,
+                CASE WHEN team_id_home = ? THEN pts_home ELSE pts_away END AS team_pts,
+                CASE WHEN team_id_home = ? THEN pts_away ELSE pts_home END AS opp_pts,
+                CASE WHEN team_id_home = ? THEN pts_home - pts_away ELSE pts_away - pts_home END AS margin,
+                CASE WHEN team_id_home = ? THEN fg_pct_away ELSE fg_pct_home END AS opp_fg_pct,
+                CASE WHEN team_id_home = ? THEN fga_away ELSE fga_home END AS opp_fga,
+                CASE WHEN team_id_home = ? THEN fg3a_away ELSE fg3a_home END AS opp_fg3a,
+                CASE WHEN team_id_home = ? THEN fg3_pct_away ELSE fg3_pct_home END AS opp_fg3_pct,
+                CASE WHEN team_id_home = ? THEN oreb_away ELSE oreb_home END AS opp_oreb,
+                CASE WHEN team_id_home = ? THEN dreb_away ELSE dreb_home END AS opp_dreb,
+                CASE WHEN team_id_home = ? THEN fta_away ELSE fta_home END AS opp_fta,
+                CASE WHEN team_id_home = ? THEN ft_pct_away ELSE ft_pct_home END AS opp_ft_pct,
+                CASE WHEN team_id_home = ? THEN tov_away ELSE tov_home END AS opp_tov,
+                CASE WHEN team_id_home = ? THEN ast_away ELSE ast_home END AS opp_ast
+            FROM dim_game
+            {where}
+        )
+        SELECT *,
+               (DATE_DIFF('day', LAG(game_date) OVER (ORDER BY game_date), game_date) = 1) AS is_back_to_back
+        FROM base
+        ORDER BY game_date
+    """, [team_id] * 16 + params).fetchdf()
+
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No games found for that team/season selection")
+
+    df["game_date"] = df["game_date"].astype(str)
+    df["is_back_to_back"] = df["is_back_to_back"].fillna(False)
+
+    games = _clean_nan(df.to_dict(orient="records"))
+    return {
+        "team_id": team_id,
+        "seasons_requested": seasons,
+        "season_type": season_type,
+        "game_count": len(games),
+        "games": games,
     }

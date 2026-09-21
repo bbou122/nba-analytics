@@ -210,3 +210,124 @@ def get_excluded_team_games(
         LIMIT ?
     """, params + [limit]).fetchdf()
     return df.to_dict(orient="records")
+
+
+@router.get("/rotation")
+def get_game_rotation(
+    game_id: str = Query(...),
+    con: duckdb.DuckDBPyConnection = Depends(get_db),
+):
+    """
+    Per-player on-court rotation for one game, for a minutes-rotation
+    chart: for each player, the sequence of fact_lineup_stints rows they
+    were part of, each carrying its own plus-minus (points_for -
+    points_against for that player's own team during that stint) and its
+    ELAPSED GAME-CLOCK position in seconds.
+
+    start_event/end_event in fact_lineup_stints are play-by-play event
+    indices, not clock time -- elapsed time is reconstructed here as a
+    running cumulative sum of each stint's `seconds` duration, in
+    start_event order, per team. Segments for the same player are NOT
+    merged across adjacent stints: a teammate substitution ends one
+    lineup-stint and starts the next even if this player never left the
+    floor, so a continuous on-court stretch can render as several
+    back-to-back segments -- this matches how courtsketch.com's own
+    rotation chart renders it, and keeps each segment's plus-minus tied
+    to an actual lineup-stint rather than an invented merge.
+    """
+    game_df = con.execute("""
+        SELECT game_id, game_date, team_id_home, team_abbreviation_home, team_name_home, pts_home,
+               team_id_away, team_abbreviation_away, team_name_away, pts_away
+        FROM dim_game WHERE game_id = ?
+    """, [game_id]).fetchdf()
+    if game_df.empty:
+        raise HTTPException(status_code=404, detail="Game not found")
+    g = game_df.to_dict(orient="records")[0]
+
+    def _team_rotation(team_id):
+        stints_df = con.execute("""
+            SELECT lineup, start_event, end_event, seconds, points_for, points_against
+            FROM fact_lineup_stints
+            WHERE game_id = ? AND team_id = ?
+            ORDER BY start_event
+        """, [game_id, team_id]).fetchdf()
+        if stints_df.empty:
+            return {"team_id": team_id, "players": [], "total_seconds": 0, "flagged": False, "flag_info": None}
+
+        stints_df["elapsed_end"] = stints_df["seconds"].cumsum()
+        stints_df["elapsed_start"] = stints_df["elapsed_end"] - stints_df["seconds"]
+        stints_df["player_id"] = stints_df["lineup"].str.split("|")
+        exploded = stints_df.explode("player_id")
+        exploded = exploded[exploded["player_id"] != ""]
+        exploded["player_id"] = exploded["player_id"].astype(int)
+        exploded["margin"] = exploded["points_for"] - exploded["points_against"]
+
+        total_seconds = int(stints_df["seconds"].sum())
+
+        all_ids = exploded["player_id"].unique().tolist()
+        id_to_name = {}
+        if all_ids:
+            ids_sql = ",".join(str(i) for i in all_ids)  # our own derived ids, not user input
+            names_df = con.execute(f"SELECT id, full_name FROM dim_player WHERE id IN ({ids_sql})").fetchdf()
+            id_to_name = dict(zip(names_df["id"], names_df["full_name"]))
+
+        players = []
+        for pid, grp in exploded.groupby("player_id"):
+            grp = grp.sort_values("elapsed_start")
+            segments = [
+                {
+                    "start_seconds": int(r["elapsed_start"]),
+                    "end_seconds": int(r["elapsed_end"]),
+                    "margin": int(r["margin"]),
+                }
+                for _, r in grp.iterrows()
+            ]
+            players.append({
+                "player_id": int(pid),
+                "player_name": id_to_name.get(pid, f"#{pid}"),
+                "total_seconds": int(grp["seconds"].sum()),
+                "segments": segments,
+            })
+        players.sort(key=lambda p: -p["total_seconds"])
+
+        flag_df = con.execute("""
+            SELECT total_seconds, nearest_valid, diff
+            FROM qa_excluded_team_games
+            WHERE game_id = ? AND team_id = ?
+        """, [game_id, team_id]).fetchdf()
+        flagged = not flag_df.empty
+        flag_info = flag_df.to_dict(orient="records")[0] if flagged else None
+
+        return {
+            "team_id": team_id,
+            "players": players,
+            "total_seconds": total_seconds,
+            "flagged": flagged,
+            "flag_info": flag_info,
+        }
+
+    home = _team_rotation(g["team_id_home"])
+    away = _team_rotation(g["team_id_away"])
+    if not home["players"] and not away["players"]:
+        raise HTTPException(status_code=404, detail="No lineup-stint data found for that game")
+
+    home.update({"abbreviation": g["team_abbreviation_home"], "name": g["team_name_home"], "pts": g["pts_home"]})
+    away.update({"abbreviation": g["team_abbreviation_away"], "name": g["team_name_away"], "pts": g["pts_away"]})
+
+    total_seconds = max(home["total_seconds"], away["total_seconds"])
+    # OT period count derived from actual on-court time rather than
+    # fact_line_score's OT columns, which store 0 (not NULL) for periods
+    # that never happened -- reconstructing from total_seconds is exact.
+    ot_periods = max(0, round((total_seconds - 2880) / 300)) if total_seconds > 2880 else 0
+
+    return {
+        "game_id": game_id,
+        "game_date": str(g["game_date"]),
+        "home": home,
+        "away": away,
+        "regulation_seconds": 2880,
+        "period_seconds": 720,
+        "ot_period_seconds": 300,
+        "ot_periods": ot_periods,
+        "total_seconds": total_seconds,
+    }

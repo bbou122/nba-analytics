@@ -146,3 +146,103 @@ def test_net_rating_trend_game_count_matches_season(client):
     # net rating team in 2022-23, right around +6.
     season_avg = sum(g["net_rating_est"] for g in data["games"]) / len(data["games"])
     assert 4.0 < season_avg < 9.0
+
+
+# --- Team Compare route ordering -------------------------------------------
+# /teams/compare sits next to /teams/{team_id}; registered after it, "compare"
+# would get parsed as a team_id and 422 -- same class of bug as the
+# archetypes/similar case above.
+
+def test_teams_compare_route_not_shadowed_by_team_id(client):
+    lakers_id = 1610612747
+    r = client.get(
+        "/teams/compare",
+        params={"team_a": KNOWN_TEAM_ID, "team_b": lakers_id, "season": KNOWN_SEASON},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_teams_compare_matches_known_records(client):
+    lakers_id = 1610612747
+    r = client.get(
+        "/teams/compare",
+        params={"team_a": KNOWN_TEAM_ID, "team_b": lakers_id, "season": KNOWN_SEASON},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["team_a"]["dashboard"]["record"]["w"] == KNOWN_RS_WINS
+    assert data["team_a"]["abbreviation"] == "BOS"
+    assert data["team_b"]["abbreviation"] == "LAL"
+    # Sanity: both teams' clutch/identity fan-outs actually populated.
+    assert data["team_a"]["clutch"]["clutch_games"] >= 0
+    assert data["team_a"]["identity"]["style"] is not None
+
+
+# --- Statboard ---------------------------------------------------------------
+
+def test_statboard_percentiles_are_in_range_and_direction_agnostic(client):
+    r = client.get("/players/statboard", params={"seasons": KNOWN_SEASON, "min_gp": 20})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["qualifying_players"] > 50
+    for p in data["players"][:25]:
+        pts_pct = p["stats"]["pts"]["percentile"]
+        assert pts_pct is None or 0 <= pts_pct <= 100
+
+
+def test_statboard_all_seasons_omits_seasons_param(client):
+    r = client.get("/players/statboard", params={"min_gp": 400})  # only career-long players qualify
+    assert r.status_code == 200, r.text
+    assert r.json()["seasons_requested"] is None
+
+
+# --- Record Calculator --------------------------------------------------------
+
+def test_record_calculator_single_season_matches_known_record(client):
+    r = client.get(
+        f"/teams/{KNOWN_TEAM_ID}/record-calculator",
+        params={"seasons": KNOWN_SEASON},
+    )
+    assert r.status_code == 200, r.text
+    games = r.json()["games"]
+    assert len(games) == 82
+    wins = sum(1 for g in games if g["result"] == "W")
+    assert wins == KNOWN_RS_WINS
+
+
+def test_record_calculator_opponent_fields_support_client_side_filtering(client):
+    r = client.get(
+        f"/teams/{KNOWN_TEAM_ID}/record-calculator",
+        params={"seasons": KNOWN_SEASON},
+    )
+    games = r.json()["games"]
+    # Filtering to games where the opponent shot lights-out from three
+    # should always be a strict subset of all games -- the whole premise
+    # this page's filters rely on.
+    hot_opponents = [g for g in games if g["opp_fg3_pct"] is not None and g["opp_fg3_pct"] >= 0.40]
+    assert 0 < len(hot_opponents) < len(games)
+
+
+# --- Minutes Rotation ----------------------------------------------------------
+
+def test_rotation_regulation_game_totals_2880_seconds(client):
+    r = client.get("/lineups/rotation", params={"game_id": "0022200001"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total_seconds"] == 2880
+    assert data["ot_periods"] == 0
+    assert data["home"]["total_seconds"] == 2880
+    assert data["away"]["total_seconds"] == 2880
+
+
+def test_rotation_player_segments_sum_to_their_total_seconds(client):
+    r = client.get("/lineups/rotation", params={"game_id": "0022200001"})
+    data = r.json()
+    for p in data["home"]["players"]:
+        seg_sum = sum(s["end_seconds"] - s["start_seconds"] for s in p["segments"])
+        assert seg_sum == p["total_seconds"]
+
+
+def test_rotation_unknown_game_404s(client):
+    r = client.get("/lineups/rotation", params={"game_id": "nope"})
+    assert r.status_code == 404

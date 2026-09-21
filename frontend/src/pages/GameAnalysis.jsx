@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import GameShotChart from "../components/GameShotChart";
 import Loading from "../components/Loading";
+import RotationChart from "../components/RotationChart";
 
 function Card({ title, subtitle, children }) {
   return (
@@ -36,6 +37,8 @@ export default function GameAnalysis() {
   const [lineups, setLineups] = useState(null);
   const [gameShots, setGameShots] = useState([]);
   const [shotFilter, setShotFilter] = useState("both");
+  const [rotation, setRotation] = useState(null);
+  const [rotationTeamFilter, setRotationTeamFilter] = useState("both");
   const [error, setError] = useState(null);
   const [gameLoading, setGameLoading] = useState(false);
 
@@ -85,6 +88,7 @@ export default function GameAnalysis() {
       .shots({ gameId, limit: 1000 })
       .then(setGameShots)
       .catch(() => setGameShots([]));
+    api.gameRotation(gameId).then(setRotation).catch(() => setRotation(null));
   }, [gameId, teamId]);
 
   return (
@@ -316,6 +320,28 @@ export default function GameAnalysis() {
                     ))}
                 </tbody>
               </table>
+            </Card>
+          )}
+
+          {rotation && (
+            <Card
+              title="Minutes Rotation (Plus/Minus)"
+              subtitle="Each colored block is one lineup-stint this player was on court for, sized to its length and colored by that stint's point differential. Gaps are bench time."
+            >
+              <div className="flex gap-2 mb-3">
+                {["both", "away", "home"].map((f) => (
+                  <button
+                    key={f}
+                    className={`px-3 py-1.5 rounded text-sm capitalize ${
+                      rotationTeamFilter === f ? "bg-slate-700" : "bg-slate-800 text-slate-400 hover:text-slate-200"
+                    }`}
+                    onClick={() => setRotationTeamFilter(f)}
+                  >
+                    {f === "both" ? "Both Teams" : f === "home" ? game.home.abbreviation : game.away.abbreviation}
+                  </button>
+                ))}
+              </div>
+              <RotationChart data={rotation} teamFilter={rotationTeamFilter} />
             </Card>
           )}
 

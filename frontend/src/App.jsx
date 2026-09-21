@@ -6,6 +6,9 @@ import GameAnalysis from "./pages/GameAnalysis";
 import DataQuality from "./pages/DataQuality";
 import Archetypes from "./pages/Archetypes";
 import Compare from "./pages/Compare";
+import Statboard from "./pages/Statboard";
+import TeamCompare from "./pages/TeamCompare";
+import RecordCalculator from "./pages/RecordCalculator";
 import Methodology from "./pages/Methodology";
 
 const TABS = [
@@ -15,6 +18,9 @@ const TABS = [
   { key: "games", label: "Game Analysis" },
   { key: "archetypes", label: "Archetypes" },
   { key: "compare", label: "Compare" },
+  { key: "statboard", label: "Statboard" },
+  { key: "teamcompare", label: "Team Compare" },
+  { key: "recordcalc", label: "Record Calculator" },
   { key: "quality", label: "Data Quality" },
   { key: "methodology", label: "Methodology" },
 ];
@@ -47,6 +53,9 @@ export default function App() {
         {tab === "games" && <GameAnalysis />}
         {tab === "archetypes" && <Archetypes />}
         {tab === "compare" && <Compare />}
+        {tab === "statboard" && <Statboard />}
+        {tab === "teamcompare" && <TeamCompare />}
+        {tab === "recordcalc" && <RecordCalculator />}
         {tab === "quality" && <DataQuality />}
         {tab === "methodology" && <Methodology />}
       </main>
